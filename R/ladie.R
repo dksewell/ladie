@@ -15,29 +15,29 @@
 #'  \item autoscale - logical used to determine whether the prior sd should be 
 #'  rescaled according to the standard deviation of the columns of the design matrix
 #'  }
-#'  @param prior_regr_intercept named list, same as prior_regr_coefs, except no autoscale
-#'  @param prior_sigma_df positive number giving the degrees of freedom for the half-t
+#' @param prior_regr_intercept named list, same as prior_regr_coefs, except no autoscale
+#' @param prior_sigma_df positive number giving the degrees of freedom for the half-t
 #'  prior on the standard deviation of the mean dose distribution
-#'  @param prior_alpha_rate positive value giving the rate of the exponential 
+#' @param prior_alpha_rate positive value giving the rate of the exponential 
 #'  prior on alpha (for beta-poisson model only)
-#'  @param nonlinear_time logical.  Set to TRUE if the expected dose should be the rate 
+#' @param nonlinear_time logical.  Set to TRUE if the expected dose should be the rate 
 #'  times time raised to some power to be estimated. NOTE: this loses the interpretability 
 #'  of the regression coefficients somewhat.
-#'  @param CI_level level for the credible intervals.
-#'  @param verbose logical. Should progress be displayed?
-#'  @param cluster integer giving the number of threads to use, or more directly an 
+#' @param CI_level level for the credible intervals.
+#' @param verbose logical. Should progress be displayed?
+#' @param cluster integer giving the number of threads to use, or more directly an 
 #'  object of class "SOCKcluster" from parallel::makeCluster().
 #'  
-#'  @returns An object of class "ladie", which is really a list with the following 
+#' @returns An object of class "ladie", which is really a list with the following 
 #'  named elements:
-#'  \itemize{
-#'    \item summary - data.frame giving the posterior median, the posterior SD, 
+#' \itemize{
+#'   \item summary - data.frame giving the posterior median, the posterior SD, 
 #'    the credible intervals (at level CI_level), and the probability of direction.
-#'    \item CI_level
-#'    \item log_posterior - value of the log posterior evaluated at the MAP.  
-#'    Useful for information criteria.
-#'    \item asymptotic_covariance - Full posterior covariance matrix.
-#'  }
+#'   \item CI_level
+#'   \item log_posterior - value of the log posterior evaluated at the MAP.  
+#'   Useful for information criteria.
+#'   \item asymptotic_covariance - Full posterior covariance matrix.
+#' }
 #'  
 #' 
 #' @export 
@@ -45,30 +45,6 @@
 #' @import parallel
 #' @import Matrix
 #' @importFrom expint gammainc
-
-
-
-if(FALSE){
-  diag(fit$asymptotic_covariance)
-  
-  fit$MCMC$samples |> matplot(type='l',lty=1)
-  
-  data = 
-    read.csv("C:/Users/dksewell/Documents/ladie_helpers/data/micro-nairobi-top10perc.csv")
-  
-  formula = 
-    i_salmonella_bin ~ floor + any_flood + exclusively_breastfed + (time | id)
-  dose_response = c("beta","exp")[1]
-  prior_regr_coefs = list(mean = 0, sd = 2.5, autoscale = TRUE)
-  prior_regr_intercept = list(mean = 0, sd = 100)
-  prior_sigma_df = 3
-  prior_alpha_rate = 1
-  nonlinear_time = FALSE
-  CI_level = 0.95
-  verbose = TRUE
-  # cluster = 10
-  
-}
 
 
 ladie = function(formula,
