@@ -266,7 +266,7 @@ ladie = function(formula,
     ## Check for numerical stability
     Sigma = 0.5 * (Sigma + t(Sigma))
     if(!matrixcalc::is.positive.definite(Sigma)){
-      warning("Asymptotic covariance not positive definite.  Don't trust results.",
+      warning("Asymptotic covariance not positive definite.  Importance proposal distribution may not be effective.",
               immediate. = TRUE)
       Sigma = as.matrix(Matrix::nearPD(Sigma)$mat)
     }
@@ -355,6 +355,11 @@ ladie = function(formula,
     results$summary = 
       data.frame(Variable = names(post_means),
                  `Posterior Mean` = is_means,
+                 `Posterior Median` = 
+                   apply(proposals,2,
+                         is_quantile, 
+                         w = is_weights,
+                         prob = 0.5),
                  `Posterior SD` = 
                    is_SDs,
                  Lower = 
@@ -460,7 +465,7 @@ ladie = function(formula,
     ## Check for numerical stability
     Sigma = 0.5 * (Sigma + t(Sigma))
     if(!matrixcalc::is.positive.definite(Sigma)){
-      warning("Asymptotic covariance not positive definite.  Don't trust results.",
+      warning("Asymptotic covariance not positive definite.  Importance proposal distribution may not be effective.",
               immediate. = TRUE)
       Sigma = as.matrix(Matrix::nearPD(Sigma)$mat)
     }
@@ -548,6 +553,11 @@ ladie = function(formula,
     results$summary = 
       data.frame(Variable = names(post_means),
                  `Posterior Mean` = is_means,
+                 `Posterior Median` = 
+                   apply(proposals,2,
+                         is_quantile, 
+                         w = is_weights,
+                         prob = 0.5),
                  `Posterior SD` = 
                    is_SDs,
                  Lower = 
