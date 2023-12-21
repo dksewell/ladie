@@ -7,13 +7,15 @@
 ladie(
   formula,
   data,
-  dose_response = c("beta-poisson", "exponential", "simple_threshold")[1],
+  dose_response = c("beta-poisson", "exponential")[1],
+  n_draws = 10000,
   prior_regr_coefs = list(mean = 0, sd = 2.5, autoscale = TRUE),
   prior_regr_intercept = list(mean = 0, sd = 10),
   prior_sigma_df = 3,
   prior_alpha_rate = 1,
   nonlinear_time = FALSE,
   CI_level = 0.95,
+  sigma_scalar = 2,
   verbose = TRUE,
   cluster
 )
@@ -25,7 +27,7 @@ that class): a symbolic description of the model to be fitted.}
 \item{data}{a data.frame containing the variables in the model.}
 
 \item{dose_response}{The dose-response model to be used.  Either the
-beta-poisson, exponential.  The simple threshold model is not finished yet.}
+beta-poisson or exponential.}
 
 \item{prior_regr_coefs}{a named list giving the hyperparameters of the
 regression coefficients, excluding the intercept.  Should include the following:
