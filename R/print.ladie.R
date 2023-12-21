@@ -5,7 +5,7 @@
 #' @param object
 #' 
 #' @export print.ladie
-#' @export
+#' @exportS3Method ladie::print
 
 print.ladie = function(object){
   cat("LADIE: LAtent Dose Incidence Estimation\n\n")

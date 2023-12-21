@@ -25,8 +25,6 @@
 #'  of the regression coefficients somewhat.
 #' @param CI_level level for the credible intervals.
 #' @param verbose logical. Should progress be displayed?
-#' @param cluster integer giving the number of threads to use, or more directly an 
-#'  object of class "SOCKcluster" from parallel::makeCluster().
 #'  
 #' @returns An object of class "ladie", which is really a list with the following 
 #'  named elements:
@@ -44,8 +42,34 @@
 #' @import dplyr
 #' @import parallel
 #' @import Matrix
-#' @importFrom expint gammainc
+#' @importFrom matrixcalc is.positive.definite
 
+if(FALSE){
+  library(ladie)
+  library(dplyr)
+  library(magrittr)
+  source("C:/Users/dksewell/Documents/ladie_helpers/scripts/simulate_ladie.R")
+  source("C:/Users/dksewell/Documents/ladie_helpers/scripts/glm_fit.R")
+  
+  
+  data = 
+    simulate_ladie(N = 200,
+                   dose_response = "exp",
+                   beta_true = c(-8,0:2))
+  formula = 
+    pathogen ~ x1 + x2 + x3  + (time | id)
+  dose_response = c("beta","exp")[1]
+  prior_regr_coefs = list(mean = 0, sd = 2.5, autoscale = TRUE)
+  prior_regr_intercept = list(mean = 0, sd = 100)
+  prior_sigma_df = 3
+  prior_alpha_rate = 1
+  nonlinear_time = FALSE
+  CI_level = 0.95
+  verbose = TRUE
+  
+  
+  
+}
 
 ladie = function(formula,
                  data,
@@ -63,14 +87,7 @@ ladie = function(formula,
     match.arg(dose_response,
               c("beta-poisson","exponential","simple_threshold"))
   
-  # Set up parallelization
-  if(!missing(cluster)){
-    if(is.numeric(cluster)){
-      if(verbose) cat("\nSetting up parallel environment")
-      cluster = makeCluster(cluster)
-      on.exit({stopCluster(cluster)})
-    }
-  }
+
   
   
   # Drop NAs
@@ -187,74 +204,36 @@ ladie = function(formula,
   if(dose_response == "beta-poisson"){
     
     ## Create negative log posterior function
-    if(missing(cluster)){
-      nlpost = function(x){
-        beta = x[1:P]
-        sig = exp(x[P+1])
-        a = exp(x[P+2])
-        
-        mu_i = X %*% beta
-        if(!nonlinear_time){
-          mu_i = mu_i + data_clean$log_time_diff
-        }
-        
-        p_i = 
-          sapply(1:nrow(data_clean),
-                 function(i){
-                   helper = function(dummy){
-                     (1.0 - (1.0 + exp(mu_i[i] + dummy * sig))^(-a)) * dnorm(dummy)
-                   }
-                   integrate(helper,-4,4)$value
-                 })
-        
-        -sum(dbinom(data_clean$y,1,p_i,log = T)) -
-          dnorm(beta[1],
-                prior_regr_intercept$mean,
-                prior_regr_intercept$sd,
-                log = TRUE) -
-          sum(dnorm(beta[-1],
-                    prior_regr_coefs$mean,
-                    prior_regr_coefs$sd,
-                    log = TRUE)) - 
-          dt(sig,df = prior_sigma_df, log = TRUE) - log(sig) -
-          dexp(a,rate = prior_alpha_rate, log = TRUE) - log(a)
+    nlpost = function(x){
+      beta = x[1:P]
+      sig = exp(x[P+1])
+      a = exp(x[P+2])
+      
+      mu_i = X %*% beta
+      if(!nonlinear_time){
+        mu_i = mu_i + data_clean$log_time_diff
       }
-    }else{
-      clusterExport(cluster,
-                    c("X","data_clean","nonlinear_time","P"),
-                    envir=environment())
-      nlpost = function(x){
-        beta = x[1:P]
-        sig = exp(x[P+1])
-        a = exp(x[P+2])
-        
-        mu_i = X %*% beta
-        if(!nonlinear_time){
-          mu_i = mu_i + data_clean$log_time_diff
-        }
-        
-        p_i = 
-          parSapply(cluster,
-                    1:nrow(data_clean),
-                    function(i){
-                      helper = function(dummy){
-                        (1.0 - (1.0 + exp(mu_i[i] + dummy * sig))^(-a)) * dnorm(dummy)
-                      }
-                      integrate(helper,-4,4)$value
-                    })
-        
-        -sum(dbinom(data_clean$y,1,p_i,log = T)) -
-          dnorm(beta[1],
-                prior_regr_intercept$mean,
-                prior_regr_intercept$sd,
-                log = TRUE) -
-          sum(dnorm(beta[-1],
-                    prior_regr_coefs$mean,
-                    prior_regr_coefs$sd,
-                    log = TRUE)) - 
-          dt(sig,df = prior_sigma_df, log = TRUE) - log(sig) -
-          dexp(a,rate = prior_alpha_rate, log = TRUE) - log(a)
-      }
+      
+      p_i = 
+        sapply(1:nrow(data_clean),
+               function(i){
+                 helper = function(dummy){
+                   (1.0 - (1.0 + exp(mu_i[i] + dummy * sig))^(-a)) * dnorm(dummy)
+                 }
+                 integrate(helper,-4,4)$value
+               })
+      
+      -sum(dbinom(data_clean$y,1,p_i,log = T)) -
+        dnorm(beta[1],
+              prior_regr_intercept$mean,
+              prior_regr_intercept$sd,
+              log = TRUE) -
+        sum(dnorm(beta[-1],
+                  prior_regr_coefs$mean,
+                  prior_regr_coefs$sd,
+                  log = TRUE)) - 
+        dt(sig,df = prior_sigma_df, log = TRUE) - log(sig) -
+        dexp(a,rate = prior_alpha_rate, log = TRUE) - log(a)
     }
     
     ## Get initial values
@@ -356,6 +335,25 @@ ladie = function(formula,
     results$log_posterior = 
       -fit$value
     
+    results$log_likelihood = 
+      results$log_posterior - 
+      dnorm(results$summary$`Posterior Median`[1],
+            prior_regr_intercept$mean,
+            prior_regr_intercept$sd,
+            log = TRUE) -
+      sum(dnorm(results$summary$`Posterior Median`[2:P],
+                prior_regr_coefs$mean,
+                prior_regr_coefs$sd,
+                log = TRUE)) - 
+      dt(results$summary$`Posterior Median`[P+1],
+         df = prior_sigma_df,
+         log = TRUE) - log(results$summary$`Posterior Median`[P+1]) -
+      dexp(results$summary$`Posterior Median`[P+2],
+           rate = prior_alpha_rate,
+           log = TRUE) - log(results$summary$`Posterior Median`[P+2])
+    
+    results$data = data_clean
+    
     results$asymptotic_covariance = Sigma
     
     class(results) = "ladie"
@@ -366,70 +364,34 @@ ladie = function(formula,
   if(dose_response == "exponential"){
     
     ## Create negative log posterior function
-    if(missing(cluster)){
-      nlpost = function(x){
-        beta = x[1:P]
-        sig = exp(x[P+1])
-        
-        mu_i = X %*% beta
-        if(!nonlinear_time){
-          mu_i = mu_i + data_clean$log_time_diff
-        }
-        
-        p_i = 
-          sapply(1:nrow(data_clean),
-                 function(i){
-                   helper = function(dummy){
-                     (1.0 - exp(-exp(mu_i[i] + dummy * sig))) * dnorm(dummy)
-                   }
-                   integrate(helper,-4,4)$value
-                 })
-        
-        -sum(dbinom(data_clean$y,1,p_i,log = T)) -
-          dnorm(beta[1],
-                prior_regr_intercept$mean,
-                prior_regr_intercept$sd,
-                log = TRUE) -
-          sum(dnorm(beta[-1],
-                    prior_regr_coefs$mean,
-                    prior_regr_coefs$sd,
-                    log = TRUE)) - 
-          dt(sig,df = prior_sigma_df, log = TRUE) - log(sig)
+    nlpost = function(x){
+      beta = x[1:P]
+      sig = exp(x[P+1])
+      
+      mu_i = X %*% beta
+      if(!nonlinear_time){
+        mu_i = mu_i + data_clean$log_time_diff
       }
-    }else{
-      clusterExport(cluster,
-                    c("X","data_clean","nonlinear_time","P"),
-                    envir=environment())
-      nlpost = function(x){
-        beta = x[1:P]
-        sig = exp(x[P+1])
-        
-        mu_i = X %*% beta
-        if(!nonlinear_time){
-          mu_i = mu_i + data_clean$log_time_diff
-        }
-        
-        p_i = 
-          parSapply(cluster,
-                    1:nrow(data_clean),
-                    function(i){
-                      helper = function(dummy){
-                        (1.0 - exp(-exp(mu_i[i] + dummy * sig))) * dnorm(dummy)
-                      }
-                      integrate(helper,-4,4)$value
-                    })
-        
-        -sum(dbinom(data_clean$y,1,p_i,log = T)) -
-          dnorm(beta[1],
-                prior_regr_intercept$mean,
-                prior_regr_intercept$sd,
-                log = TRUE) -
-          sum(dnorm(beta[-1],
-                    prior_regr_coefs$mean,
-                    prior_regr_coefs$sd,
-                    log = TRUE)) - 
-          dt(sig,df = prior_sigma_df, log = TRUE) - log(sig)
-      }
+      
+      p_i = 
+        sapply(1:nrow(data_clean),
+               function(i){
+                 helper = function(dummy){
+                   (1.0 - exp(-exp(mu_i[i] + dummy * sig))) * dnorm(dummy)
+                 }
+                 integrate(helper,-4,4)$value
+               })
+      
+      -sum(dbinom(data_clean$y,1,p_i,log = T)) -
+        dnorm(beta[1],
+              prior_regr_intercept$mean,
+              prior_regr_intercept$sd,
+              log = TRUE) -
+        sum(dnorm(beta[-1],
+                  prior_regr_coefs$mean,
+                  prior_regr_coefs$sd,
+                  log = TRUE)) - 
+        dt(sig,df = prior_sigma_df, log = TRUE) - log(sig)
     }
     
     ## Get initial values
@@ -484,6 +446,64 @@ ladie = function(formula,
       Sigma = as.matrix(Matrix::nearPD(Sigma)$mat)
     }
     
+    # # -Experimental- IS
+    # sigma_scalar = 2
+    # n_draws = 1e3
+    # proposals = 
+    #   mvtnorm::rmvnorm(n_draws,
+    #                    fit$par,
+    #                    sigma_scalar * Sigma)
+    # 
+    # targetPDF = 
+    #   sapply(1:n_draws,
+    #          function(i) -nlpost(proposals[i,]))
+    # proposalPDF = 
+    #   sapply(1:n_draws,
+    #          function(i) mvtnorm::dmvnorm(proposals[i,],
+    #                                       fit$par,
+    #                                       sigma_scalar * Sigma,
+    #                                       log = TRUE))
+    # is_weights = targetPDF - proposalPDF
+    # is_weights = exp(is_weights - max(is_weights))
+    # is_weights = is_weights / sum(is_weights)
+    # 1 / sum(is_weights^2)
+    # apply(proposals,2,
+    #       function(x) sqrt(weighted.mean(x^2,is_weights) - 
+    #                          weighted.mean(x,is_weights)^2))
+    # sqrt(diag(Sigma))
+    
+    # # -Experimental- MH with independence sampler
+    # lpost = function(x) -nlpost(x)
+    # sigma_scalar = 1.5
+    # n_draws = 1e3
+    # theta_draws = 
+    #   rbind(fit$par,
+    #         mvtnorm::rmvnorm(n_draws,
+    #                          fit$par,
+    #                          sigma_scalar * Sigma))
+    # acc_rate = 0.0
+    # for(it in 1 + 1:n_draws){
+    #   acc_prob = 
+    #     exp(lpost(theta_draws[it,]) - 
+    #           lpost(theta_draws[it-1,]) +
+    #           mvtnorm::dmvnorm(theta_draws[it-1,],
+    #                            fit$par,
+    #                            sigma_scalar * Sigma,
+    #                            log = TRUE) - 
+    #           mvtnorm::dmvnorm(theta_draws[it,],
+    #                            fit$par,
+    #                            sigma_scalar * Sigma,
+    #                            log = TRUE))
+    #   if(runif(1) < acc_prob){
+    #     acc_rate = acc_rate + 1.0 / n_draws
+    #   }else{
+    #     theta_draws[it,] = theta_draws[it-1,]
+    #   }
+    # }
+    # apply(theta_draws,2,sd)
+    # sqrt(diag(Sigma))
+    
+    
     ## Get SD and CIs on original scale
     theta_draws = 
       rnorm(1e4,
@@ -527,6 +547,22 @@ ladie = function(formula,
     
     results$log_posterior = 
       -fit$value
+    
+    results$log_likelihood = 
+      results$log_posterior - 
+      dnorm(results$summary$`Posterior Median`[1],
+            prior_regr_intercept$mean,
+            prior_regr_intercept$sd,
+            log = TRUE) -
+      sum(dnorm(results$summary$`Posterior Median`[2:P],
+                prior_regr_coefs$mean,
+                prior_regr_coefs$sd,
+                log = TRUE)) - 
+      dt(results$summary$`Posterior Median`[P+1],
+         df = prior_sigma_df,
+         log = TRUE) - log(results$summary$`Posterior Median`[P+1])
+    
+    results$data = data_clean
     
     results$asymptotic_covariance = Sigma
     

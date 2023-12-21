@@ -7,7 +7,7 @@
 #' @param print logical
 #' 
 #' @export summary.ladie
-#' @export
+#' @exportS3Method ladie::summary
 
 
 summary.ladie = function(object,CI_level,print = TRUE){
