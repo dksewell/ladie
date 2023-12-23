@@ -8,7 +8,7 @@
 #' @exportS3Method ladie::coef
 
 coef.ladie = function(object){
-  ret = object$summary$`Posterior Mean`
+  ret = object$summary$`Posterior Median`
   names(ret) = object$summary$Variable
   
   return(ret)

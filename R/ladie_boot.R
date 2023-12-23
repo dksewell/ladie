@@ -1,12 +1,13 @@
 #' ladie: LAtent Dose Incidence Estimation
 #' 
-#' Use longitudinal data to estimate risk ratios of accruing dose
+#' Use longitudinal data to estimate risk ratios of accruing dose.  ladie_boot uses 
+#' Bayesian bootstrapping to perform estimation.
 #' 
 #' @param formula an object of class "formula" (or one that can be coerced to 
 #' that class): a symbolic description of the model to be fitted. 
 #' @param data a data.frame containing the variables in the model.
 #' @param dose_response The dose-response model to be used.  Either the 
-#' beta-poisson, exponential.  The simple threshold model is not finished yet.
+#' beta-poisson or exponential. 
 #' @param prior_regr_coefs a named list giving the hyperparameters of the 
 #' regression coefficients, excluding the intercept.  Should include the following:
 #' \itemize{
@@ -24,7 +25,10 @@
 #'  times time raised to some power to be estimated. NOTE: this loses the interpretability 
 #'  of the regression coefficients somewhat.
 #' @param CI_level level for the credible intervals.
+#' @param n_bootstraps integer. Number of Bayesian bootstrap samples
 #' @param verbose logical. Should progress be displayed?
+#' @param cluster integer giving the number of threads to use, or more directly an 
+#'  object of class "SOCKcluster" from parallel::makeCluster().
 #'  
 #' @returns An object of class "ladie", which is really a list with the following 
 #'  named elements:
@@ -42,22 +46,33 @@
 #' @import dplyr
 #' @import parallel
 #' @import Matrix
-#' @importFrom matrixcalc is.positive.definite
 
-ladie = function(formula,
-                 data,
-                 dose_response = c("beta-poisson","exponential","simple_threshold")[1],
-                 prior_regr_coefs = list(mean = 0, sd = 10, autoscale = TRUE),
-                 prior_regr_intercept = list(mean = 0, sd = 10),
-                 prior_sigma_df = 3,
-                 prior_alpha_rate = 1,
-                 nonlinear_time = FALSE,
-                 CI_level = 0.95,
-                 verbose = TRUE){
+ladie_boot = function(formula,
+                      data,
+                      dose_response = c("beta-poisson","exponential")[1],
+                      prior_regr_coefs = list(mean = 0, sd = 2.5, autoscale = TRUE),
+                      prior_regr_intercept = list(mean = 0, sd = 10),
+                      prior_sigma_df = 3,
+                      prior_alpha_rate = 1,
+                      nonlinear_time = FALSE,
+                      CI_level = 0.95,
+                      n_bootstraps = 250,
+                      verbose = TRUE,
+                      cluster){
   
   dose_response =
     match.arg(dose_response,
               c("beta-poisson","exponential","simple_threshold"))
+  
+  # Set up parallelization
+  if(!missing(cluster)){
+    if(is.numeric(cluster)){
+      if(verbose) cat("\nSetting up parallel environment")
+      cluster = makeCluster(min(detectCores(),cluster))
+      on.exit({stopCluster(cluster)})
+    }
+  }
+  
   
   # Drop NAs
   data_clean = 
@@ -97,7 +112,7 @@ ladie = function(formula,
                  trimws()
              })
     rm(plus_locations,formula_string)
-    }
+  }
   
   
   # Get time variable shifted to start at zero
@@ -161,15 +176,13 @@ ladie = function(formula,
   
   # Adjust prior hyperparameters if autoscale = T
   if(isTRUE(prior_regr_coefs$autoscale)){
-    sd_x = apply(X[,-1,drop=F],2,sd)
+    sd_x = apply(X[,-1],2,sd)
     names(sd_x) = colnames(X)[-1]
     prior_regr_coefs$sd = 
       prior_regr_coefs$sd / sd_x
     rm(sd_x)
   }
   
-  # Create object to store warnings/errors
-  errors = NULL
   
   # Split here based on the two different dose-response models
   if(dose_response == "beta-poisson"){
@@ -240,103 +253,136 @@ ladie = function(formula,
     fit = 
       optim(inits,
             nlpost,
-            method = "BFGS",
-            hessian = TRUE)
+            method = "BFGS")
     
-    if(fit$conv != 0) errors = "BFGS algo did not converge"
+    ## Perform Bayesian bootstrapping
+    if(verbose) cat("\nPerforming Bayesian bootstrapping...\n")
     
-    post_means = fit$par
-    post_means[P + 1:2] = 
-      exp(post_means[P + 1:2])
-    names(post_means)[P + 1:2] = c("sigma","alpha")
+    IDs = unique(data_clean[[varnames$id]])
     
-    Sigma = qr.solve(fit$hessian)
+    ID_indices = 
+      lapply(IDs, function(id) which(data_clean[[varnames$id]] == id))
     
-    ## Check for numerical stability
-    Sigma = 0.5 * (Sigma + t(Sigma))
-    if(!matrixcalc::is.positive.definite(Sigma)){
-      warning("Asymptotic covariance not positive definite.  Don't trust results.",
-              immediate. = TRUE)
-      Sigma = as.matrix(Matrix::nearPD(Sigma)$mat)
+    boot_helper = function(i){
       
-      errors = c(errors,"Estimated covariance matrix not PSD")
+      all_levels_represented = FALSE
+      while(!all_levels_represented){
+        boot_probabilities = 
+          drop(extraDistr::rdirichlet(1,rep(1.0,length(IDs))))
+        IDs_boot = sample(1:length(IDs),length(IDs),replace=T, prob = boot_probabilities)
+        
+        data_boot = 
+          data_clean[unlist(ID_indices[IDs_boot]),]
+        
+        n_unique = 
+          data_boot |> 
+          dplyr::select(all_of(varnames$covariates)) |>
+          dplyr::summarize_all(function(x){length(unique(x))})
+        
+        all_levels_represented = 
+          !any(n_unique == 1)
+      }
+      
+      if(isTRUE(nonlinear_time)){
+        X_boot = 
+          model.matrix(as.formula(paste0("y ~ log_time_diff + ",
+                                         paste(varnames$covariates,
+                                               collapse = "+"))),
+                       data = data_boot)
+      }else{
+        X_boot = 
+          model.matrix(as.formula(paste0("y ~ ",
+                                         paste(varnames$covariates,
+                                               collapse = "+"))),
+                       data = data_boot)
+      }
+      
+      nlpost_boot = function(x){
+        beta = x[1:P]
+        sig = exp(x[P+1])
+        a = exp(x[P+2])
+        
+        mu_i = X_boot %*% beta
+        if(!nonlinear_time){
+          mu_i = mu_i + data_boot$log_time_diff
+        }
+        
+        p_i = 
+          sapply(1:nrow(data_boot),
+                 function(i){
+                   helper = function(dummy){
+                     (1.0 - (1.0 + exp(mu_i[i] + dummy * sig))^(-a)) * dnorm(dummy)
+                   }
+                   integrate(helper,-4,4)$value
+                 })
+        
+        -sum(dbinom(data_boot$y,1,p_i,log = T)) -
+          dnorm(beta[1],
+                prior_regr_intercept$mean,
+                prior_regr_intercept$sd,
+                log = TRUE) -
+          sum(dnorm(beta[-1],
+                    prior_regr_coefs$mean,
+                    prior_regr_coefs$sd,
+                    log = TRUE)) - 
+          dt(sig,df = prior_sigma_df, log = TRUE) - log(sig) -
+          dexp(a,rate = prior_alpha_rate, log = TRUE) - log(a)
+      }
+      
+      fit_boot = NA
+      try({
+        fit_boot = 
+          optim(fit$par,
+                nlpost_boot,
+                method = "BFGS")$par
+      },silent=T)
+      
+      return(fit_boot)
     }
     
-    ## Get SD and CIs on original scale
-    theta_draws = 
-      cbind(rnorm(1e4,
-                  fit$par[P+1],
-                  sqrt(Sigma[P+1,P+1])),
-            rnorm(1e4,
-                  fit$par[P+2],
-                  sqrt(Sigma[P+2,P+2]))
-      )
-    theta_draws = exp(theta_draws)
-    
+    if(!missing(cluster)){
+      clusterExport(cluster,
+                    c("P","IDs","ID_indices","data_clean","nonlinear_time",
+                      "varnames","prior_regr_intercept","prior_regr_coefs",
+                      "prior_sigma_df","prior_alpha_rate","fit"),
+                    envir = environment())
+      bootstraps = 
+        parSapply(cluster,
+                  1:n_bootstraps,
+                  boot_helper)
+    }else{
+      bootstraps = 
+        sapply(1:n_bootstraps,
+               boot_helper)
+    }
     
     ## Return results
     results = list()
     
     results$summary = 
-      data.frame(Variable = names(post_means),
-                 `Posterior Median` = post_means,
+      data.frame(Variable = c(colnames(X),"sigma","alpha"),
+                 `Posterior Mean` = rowMeans(bootstraps),
+                 `Posterior Mode` = fit$par,
                  `Posterior SD` = 
-                   sqrt(c(diag(Sigma)[1:P],
-                          apply(theta_draws,2,var))),
+                   apply(bootstraps,1,sd),
                  Lower = 
-                   c(qnorm((1-CI_level)/2,
-                           post_means[1:P],
-                           sqrt(diag(Sigma)[1:P])),
-                     apply(theta_draws,2,quantile,probs = (1-CI_level)/2)),
+                   apply(bootstraps,1,quantile,probs = 0.025),
                  Upper = 
-                   c(qnorm(1 - (1-CI_level)/2,
-                           post_means[1:P],
-                           sqrt(diag(Sigma)[1:P])),
-                     apply(theta_draws,2,quantile,probs = 1 - (1-CI_level)/2)),
+                   apply(bootstraps,1,quantile,probs = 0.975),
                  `Prob. Direction` = 
-                   c(pnorm(0,
-                           post_means[1:P],
-                           sqrt(diag(Sigma)[1:P])),
-                     rep(NA,2)),
+                   c(apply(bootstraps[1:P,],1,function(x) mean(x > 0)),NA,NA),
                  check.names = FALSE,
                  row.names = NULL)
-    results$summary$`Prob. Direction` = 
-      ifelse(results$summary$`Prob. Direction` < 0.5,
-             1 - results$summary$`Prob. Direction`,
-             results$summary$`Prob. Direction`)
-    
+    results$summary$`Prob. Direction` =
+      sapply(results$summary$`Prob. Direction`,function(x)max(x, 1.0 - x))
     results$CI_level = CI_level
-    
-    results$log_posterior = 
-      -fit$value
-    
-    results$log_likelihood = 
-      results$log_posterior - 
-      dnorm(results$summary$`Posterior Median`[1],
-            prior_regr_intercept$mean,
-            prior_regr_intercept$sd,
-            log = TRUE) -
-      sum(dnorm(results$summary$`Posterior Median`[2:P],
-                prior_regr_coefs$mean,
-                prior_regr_coefs$sd,
-                log = TRUE)) - 
-      dt(results$summary$`Posterior Median`[P+1],
-         df = prior_sigma_df,
-         log = TRUE) - log(results$summary$`Posterior Median`[P+1]) -
-      dexp(results$summary$`Posterior Median`[P+2],
-           rate = prior_alpha_rate,
-           log = TRUE) - log(results$summary$`Posterior Median`[P+2])
     
     results$data = data_clean
     
-    results$asymptotic_covariance = Sigma
-    
-    results$prior_regr_coefs = prior_regr_coefs
-    results$prior_regr_intercept = prior_regr_intercept
-    results$prior_sigma_df = prior_sigma_df
-    results$prior_alpha_rate = prior_alpha_rate
-    
-    results$errors = errors
+    results$bootstrap_samples = 
+      t(bootstraps)
+    colnames(results$bootstrap_samples) = 
+      c(colnames(X),"sigma","alpha")
     
     class(results) = "ladie"
     
@@ -410,95 +456,134 @@ ladie = function(formula,
     fit = 
       optim(inits,
             nlpost,
-            method = "BFGS",
-            hessian = TRUE)
+            method = "BFGS")
     
-    if(fit$conv != 0) errors = "BFGS algo did not converge"
+    ## Perform Bayesian bootstrapping
+    if(verbose) cat("\nPerforming Bayesian bootstrapping...\n")
+    IDs = unique(data_clean[[varnames$id]])
     
-    post_means = fit$par
-    post_means[P + 1] = 
-      exp(post_means[P + 1])
-    names(post_means)[P + 1] = c("sigma")
+    ID_indices = 
+      lapply(IDs, function(id) which(data_clean[[varnames$id]] == id))
     
-    Sigma = qr.solve(fit$hessian)
-    
-    ## Check for numerical stability
-    Sigma = 0.5 * (Sigma + t(Sigma))
-    if(!matrixcalc::is.positive.definite(Sigma)){
-      warning("Asymptotic covariance not positive definite.  Don't trust results.",
-              immediate. = TRUE)
-      Sigma = as.matrix(Matrix::nearPD(Sigma)$mat)
+    boot_helper = function(i){
       
-      errors = c(errors,"Estimated covariance matrix not PSD")
+      all_levels_represented = FALSE
+      while(!all_levels_represented){
+        boot_probabilities = 
+          drop(extraDistr::rdirichlet(1,rep(1.0,length(IDs))))
+        IDs_boot = sample(1:length(IDs),length(IDs),replace=T, prob = boot_probabilities)
+        
+        data_boot = 
+          data_clean[unlist(ID_indices[IDs_boot]),]
+        
+        n_unique = 
+          data_boot |> 
+          dplyr::select(all_of(varnames$covariates)) |>
+          dplyr::summarize_all(function(x){length(unique(x))})
+        
+        all_levels_represented = 
+          !any(n_unique == 1)
+      }
+      
+      if(isTRUE(nonlinear_time)){
+        X_boot = 
+          model.matrix(as.formula(paste0("y ~ log_time_diff + ",
+                                         paste(varnames$covariates,
+                                               collapse = "+"))),
+                       data = data_boot)
+      }else{
+        X_boot = 
+          model.matrix(as.formula(paste0("y ~ ",
+                                         paste(varnames$covariates,
+                                               collapse = "+"))),
+                       data = data_boot)
+      }
+      
+      nlpost_boot = function(x){
+        beta = x[1:P]
+        sig = exp(x[P+1])
+        
+        mu_i = X_boot %*% beta
+        if(!nonlinear_time){
+          mu_i = mu_i + data_boot$log_time_diff
+        }
+        
+        p_i = 
+          sapply(1:nrow(data_boot),
+                 function(i){
+                   helper = function(dummy){
+                     (1.0 - exp(-exp(mu_i[i] + dummy * sig))) * dnorm(dummy)
+                   }
+                   integrate(helper,-4,4)$value
+                 })
+        
+        -sum(dbinom(data_boot$y,1,p_i,log = T)) -
+          dnorm(beta[1],
+                prior_regr_intercept$mean,
+                prior_regr_intercept$sd,
+                log = TRUE) -
+          sum(dnorm(beta[-1],
+                    prior_regr_coefs$mean,
+                    prior_regr_coefs$sd,
+                    log = TRUE)) - 
+          dt(sig,df = prior_sigma_df, log = TRUE) - log(sig)
+      }
+      
+      fit_boot = NA
+      try({
+        fit_boot = 
+          optim(fit$par,
+                nlpost_boot,
+                method = "BFGS")$par
+      },silent=T)
+      
+      return(fit_boot)
     }
     
-    ## Get SD and CIs on original scale
-    theta_draws = 
-      rnorm(1e4,
-            fit$par[P+1],
-            sqrt(Sigma[P+1,P+1]))
-    theta_draws = exp(theta_draws)
-    
+    if(!missing(cluster)){
+      clusterExport(cluster,
+                    c("P","IDs","ID_indices","data_clean","nonlinear_time",
+                      "varnames","prior_regr_intercept","prior_regr_coefs",
+                      "prior_sigma_df","fit"),
+                    envir = environment())
+      bootstraps = 
+        parSapply(cluster,
+                  1:n_bootstraps,
+                  boot_helper)
+    }else{
+      bootstraps = 
+        sapply(1:n_bootstraps,
+               boot_helper)
+    }
     
     ## Return results
     results = list()
     
     results$summary = 
-      data.frame(Variable = names(post_means),
-                 `Posterior Median` = post_means,
+      data.frame(Variable = c(colnames(X),"sigma"),
+                 `Posterior Mean` = rowMeans(bootstraps),
+                 `Posterior Mode` = fit$par,
                  `Posterior SD` = 
-                   sqrt(c(diag(Sigma)[1:P],
-                          var(theta_draws))),
+                   apply(bootstraps,1,sd),
                  Lower = 
-                   c(qnorm((1-CI_level)/2,
-                           post_means[1:P],
-                           sqrt(diag(Sigma)[1:P])),
-                     quantile(theta_draws,probs = (1-CI_level)/2)),
+                   apply(bootstraps,1,quantile,probs = (1 - CI_level) / 2),
                  Upper = 
-                   c(qnorm(1 - (1-CI_level)/2,
-                           post_means[1:P],
-                           sqrt(diag(Sigma)[1:P])),
-                     quantile(theta_draws,probs = 1 - (1-CI_level)/2)),
+                   apply(bootstraps,1,quantile,probs = 1 - (1 - CI_level) / 2),
                  `Prob. Direction` = 
-                   c(pnorm(0,
-                           post_means[1:P],
-                           sqrt(diag(Sigma)[1:P])),
-                     NA),
+                   c(apply(bootstraps[1:P,],1,function(x) mean(x > 0)),NA),
                  check.names = FALSE,
                  row.names = NULL)
-    results$summary$`Prob. Direction` = 
-      ifelse(results$summary$`Prob. Direction` < 0.5,
-             1 - results$summary$`Prob. Direction`,
-             results$summary$`Prob. Direction`)
+    results$summary$`Prob. Direction` =
+      sapply(results$summary$`Prob. Direction`,function(x)max(x, 1.0 - x))
     
     results$CI_level = CI_level
     
-    results$log_posterior = 
-      -fit$value
-    
-    results$log_likelihood = 
-      results$log_posterior - 
-      dnorm(results$summary$`Posterior Median`[1],
-            prior_regr_intercept$mean,
-            prior_regr_intercept$sd,
-            log = TRUE) -
-      sum(dnorm(results$summary$`Posterior Median`[2:P],
-                prior_regr_coefs$mean,
-                prior_regr_coefs$sd,
-                log = TRUE)) - 
-      dt(results$summary$`Posterior Median`[P+1],
-         df = prior_sigma_df,
-         log = TRUE) - log(results$summary$`Posterior Median`[P+1])
-    
     results$data = data_clean
     
-    results$asymptotic_covariance = Sigma
-    
-    results$prior_regr_coefs = prior_regr_coefs
-    results$prior_regr_intercept = prior_regr_intercept
-    results$prior_sigma_df = prior_sigma_df
-    
-    results$errors = errors
+    results$bootstrap_samples = 
+      t(bootstraps)
+    colnames(results$bootstrap_samples) = 
+      c(colnames(X),"sigma")
     
     class(results) = "ladie"
     
@@ -508,3 +593,4 @@ ladie = function(formula,
   
   
 }
+
