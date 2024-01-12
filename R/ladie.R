@@ -25,6 +25,7 @@
 #'  of the regression coefficients somewhat.
 #' @param CI_level level for the credible intervals.
 #' @param verbose logical. Should progress be displayed?
+#' @param optim_args named list giving arguments to optim().
 #'  
 #' @returns An object of class "ladie", which is really a list with the following 
 #'  named elements:
@@ -47,13 +48,14 @@
 ladie = function(formula,
                  data,
                  dose_response = c("beta-poisson","exponential","simple_threshold")[1],
-                 prior_regr_coefs = list(mean = 0, sd = 10, autoscale = TRUE),
+                 prior_regr_coefs = list(mean = 0, sd = 2.5, autoscale = TRUE),
                  prior_regr_intercept = list(mean = 0, sd = 10),
                  prior_sigma_df = 3,
                  prior_alpha_rate = 1,
                  nonlinear_time = FALSE,
                  CI_level = 0.95,
-                 verbose = TRUE){
+                 verbose = TRUE,
+                 optim_args = list(method = "BFGS")){
   
   dose_response =
     match.arg(dose_response,
@@ -237,11 +239,13 @@ ladie = function(formula,
     
     ## Fit full model
     if(verbose) cat("\nPerforming optimization...")
+    optim_args$par = inits
+    optim_args$fn = nlpost
+    optim_args$hessian = TRUE
+    if(is.null(optim_args$method)) optim_args$method = "BFGS"
     fit = 
-      optim(inits,
-            nlpost,
-            method = "BFGS",
-            hessian = TRUE)
+      do.call(optim,
+              optim_args)
     
     if(fit$conv != 0) errors = "BFGS algo did not converge"
     
@@ -407,11 +411,14 @@ ladie = function(formula,
     
     ## Fit full model
     if(verbose) cat("\nPerforming optimization...")
+    optim_args$par = inits
+    optim_args$fn = nlpost
+    optim_args$hessian = TRUE
+    if(is.null(optim_args$method)) optim_args$method = "BFGS"
     fit = 
-      optim(inits,
-            nlpost,
-            method = "BFGS",
-            hessian = TRUE)
+      do.call(optim,
+              optim_args)
+    
     
     if(fit$conv != 0) errors = "BFGS algo did not converge"
     

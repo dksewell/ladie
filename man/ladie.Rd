@@ -14,7 +14,8 @@ ladie(
   prior_alpha_rate = 1,
   nonlinear_time = FALSE,
   CI_level = 0.95,
-  verbose = TRUE
+  verbose = TRUE,
+  optim_args = list(method = "BFGS")
 )
 }
 \arguments{
@@ -50,6 +51,8 @@ of the regression coefficients somewhat.}
 \item{CI_level}{level for the credible intervals.}
 
 \item{verbose}{logical. Should progress be displayed?}
+
+\item{optim_args}{named list giving arguments to optim().}
 }
 \value{
 An object of class "ladie", which is really a list with the following
