@@ -111,25 +111,32 @@ SUBSET_multipath = function(objects,
   }
   
   ## Create matrix to span
-  ### Don't shrink sigma and alpha
-  no_shrink_indices = c(sigma_seq,alpha_seq)
-  ### Don't shrink those indicated by paths_by_variable
-  no_shrinkage = which(rowSums(paths_by_variable) == 0)
-  if(length(no_shrinkage) > 0){
-    for(i in 1:length(no_shrinkage)) no_shrink_indices = c(no_shrink_indices,seq(no_shrinkage[i],Q,by=P+2))
+  I_j_S = function(j,S){
+    diag(Q)[,(P + 2) * (S-1) + j,drop=F]
   }
-  for(i in which( (rowSums(paths_by_variable) > 0) & (rowSums(paths_by_variable) < n_pathogens) )){
-    no_shrink_indices = 
-      c(no_shrink_indices,
-        seq(i,Q,by=P+2)[which(paths_by_variable[i,] == 0)])
+  v_S_e = function(S,j){
+    if(length(S) > 0){
+      vv = matrix(0.0,n_pathogens,1)
+      ee = matrix(0.0,P + 2,1)
+      vv[S] = 1.0
+      ee[j] = 1.0
+      return(vv %x% ee)
+    }else{
+      return(matrix(0.0,Q,0))
+    }
   }
-  no_shrink_indices = sort(no_shrink_indices)
-  L = diag(Q)[,no_shrink_indices]
-  for(i in which(rowSums(paths_by_variable) > 0)){
-    L_added_column = matrix(0.0,Q,1)
-    L_added_column[seq(i,Q,by=P+2)[which(paths_by_variable[i,] == 1)],1] = 1.0
-    L = cbind(L,L_added_column)
+  
+  L = matrix(0.0,Q,0)
+  for(j in 1:P){
+    L = 
+      cbind(L,
+            I_j_S(j,which(paths_by_variable[j,] != 1)),
+            v_S_e(which(paths_by_variable[j,] == 1),j))
   }
+  L = 
+    cbind(L,
+          I_j_S(P + 1, 1:n_pathogens),
+          I_j_S(P + 2, 1:n_pathogens))
   
   ## Now create the projection matrix
   Proj_mat = Proj(L)
